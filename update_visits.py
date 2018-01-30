@@ -5,15 +5,16 @@ from googleapiclient.errors import HttpError
 from googleapiclient import sample_tools
 from oauth2client.client import AccessTokenRefreshError
 
-from http import server, client
+from http import server
 import psycopg2
 
 from raven import Client
+import logging
 
 
 
 class HTTPServer(server.BaseHTTPRequestHandler):
-    _raven_dsn = '__dns__'
+    _raven_dsn = 'https://10b6d8230e544e8ab93b678234bb9ebd:075d6a5d72a947b3818ff39aa8a54e86@sentry.io/279802'
     _client = Client(_raven_dsn)
 
     _re_product_id = re.compile(r'products/(\d+)[/\?]?')
@@ -23,7 +24,7 @@ class HTTPServer(server.BaseHTTPRequestHandler):
     _POSTGRES_DB_HOST = 'localhost'
     _POSTGRES_DB_NAME = 'data'
     _POSTGRES_DB_USER = 'postgres'
-    _POSTGRES_DB_PASSWORD = 'pass'
+    _POSTGRES_DB_PASSWORD = '1513178c'
     _POSTGRES_DB_TABLE_NAME = 'visits'
     _POSTGRES__DB_PORT = 5432
 
@@ -64,6 +65,8 @@ class HTTPServer(server.BaseHTTPRequestHandler):
         if xid:
             d['X-Request-Id'] = xid
         self._client.captureMessage(d)
+        logging.error(d)
+
 
     def do_GET(self):
         _xid = self.headers['X-Request-Id']
@@ -133,7 +136,7 @@ class HTTPServer(server.BaseHTTPRequestHandler):
         try:
             db = psycopg2.connect(conn_string)
             cur = db.cursor()
-            query = 'INSERT INTO %s (id, num) VALUES' % self._POSTGRES_DB_TABLE_NAME
+            query = 'INSEsRT INTO %s (id, num) VALUES' % self._POSTGRES_DB_TABLE_NAME
             for elem in data.keys():
                 query += '(%s, %s),' % (elem, data[elem])
             query = query[:-1] + 'ON CONFLICT (id) DO UPDATE SET num=EXCLUDED.num;'
