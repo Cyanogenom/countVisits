@@ -14,7 +14,7 @@ import logging
 
 
 class HTTPServer(server.BaseHTTPRequestHandler):
-    _raven_dsn = 'https://10b6d8230e544e8ab93b678234bb9ebd:075d6a5d72a947b3818ff39aa8a54e86@sentry.io/279802'
+    _raven_dsn = '_dsn_'
     _client = Client(_raven_dsn)
 
     _re_product_id = re.compile(r'products/(\d+)[/\?]?')
@@ -24,7 +24,7 @@ class HTTPServer(server.BaseHTTPRequestHandler):
     _POSTGRES_DB_HOST = 'localhost'
     _POSTGRES_DB_NAME = 'data'
     _POSTGRES_DB_USER = 'postgres'
-    _POSTGRES_DB_PASSWORD = '1513178c'
+    _POSTGRES_DB_PASSWORD = 'pass'
     _POSTGRES_DB_TABLE_NAME = 'visits'
     _POSTGRES__DB_PORT = 5432
 
