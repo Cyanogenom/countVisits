@@ -1,126 +1,155 @@
 import re
+import time
 
 from googleapiclient.errors import HttpError
 from googleapiclient import sample_tools
 from oauth2client.client import AccessTokenRefreshError
 
-import http.server
+from http import server, client
 import psycopg2
 
-
-re_product_id = re.compile(r'products/(\d+)[/\?]?')
-prof_id = 'id'
-step = 1000
+from raven import Client
 
 
-def get_top_keywords(service, start_idx):
 
-    return service.data().ga().get(
-        ids='ga:' + prof_id,
-        start_date='182daysAgo',
-        end_date='today',
-        metrics='ga:pageViews',
-        dimensions='ga:pagePath',
-        start_index=start_idx,
-        filters='ga:pagePath=@/products/',
-    ).execute()
+class HTTPServer(server.BaseHTTPRequestHandler):
+    _raven_dsn = '__dns__'
+    _client = Client(_raven_dsn)
 
+    _re_product_id = re.compile(r'products/(\d+)[/\?]?')
+    _prof_id = '162086698'
+    _step = 1000
 
-def parse_results(rows):
-    d = {}
-    for row in rows:
-        if len(re_product_id.findall(row[0])) != 1:
-            print(row, re_product_id.findall(row[0]))
+    _POSTGRES_DB_HOST = 'localhost'
+    _POSTGRES_DB_NAME = 'data'
+    _POSTGRES_DB_USER = 'postgres'
+    _POSTGRES_DB_PASSWORD = 'pass'
+    _POSTGRES_DB_TABLE_NAME = 'visits'
+    _POSTGRES__DB_PORT = 5432
 
-        if re_product_id.findall(row[0]):
-            d_id = re_product_id.findall(row[0])[0]
-            if d.get(d_id, None):
-                d[d_id] += int(row[1])
-            else:
-                d[d_id] = int(row[1])
+    _correct_path = '/update_visits'
 
+    def _get_top_keywords(self, service, start_idx):
 
-    return d
+        return service.data().ga().get(
+            ids='ga:' + self._prof_id,
+            start_date='182daysAgo',
+            end_date='today',
+            metrics='ga:pageViews',
+            dimensions='ga:pagePath',
+            start_index=start_idx,
+            filters='ga:pagePath=@/products/',
+        ).execute()
 
+    def _parse_results(self, rows):
+        d = {}
+        for row in rows:
+            if self._re_product_id.findall(row[0]):
+                d_id = self._re_product_id.findall(row[0])[0]
+                if d.get(d_id, None):
+                    d[d_id] += int(row[1])
+                else:
+                    d[d_id] = int(row[1])
 
-class HTTPServer(http.server.BaseHTTPRequestHandler):
-    host = 'localhost'
-    db_name = 'data'
-    user = 'postgres'
-    password = 'pass'
-    table_name = 'visits'
+        return d
+
+    def _logging(self, type, path, headers, error, xid):
+        d = {
+            'type': type,
+            'path': path,
+            'headers': headers,
+            'time': time.time(),
+            'error': error
+        }
+        if xid:
+            d['X-Request-Id'] = xid
+        self._client.captureMessage(d)
 
     def do_GET(self):
+        _xid = self.headers['X-Request-Id']
+
         code = 200
-        service, flags = sample_tools.init(
-            [], 'analytics', 'v3', __doc__, __file__,
-            scope='https://www.googleapis.com/auth/analytics.readonly')
+        message = 'ok'
+        if self.path == self._correct_path:
+            service, flags = sample_tools.init(
+                [], 'analytics', 'v3', __doc__, __file__,
+                scope='https://www.googleapis.com/auth/analytics.readonly')
 
-        # Try to make a request to the API. Print the results or handle errors.
-        try:
-            idx = 1
-            total = 0
-            rows = []
-            while idx == 1 or idx < total:
-                print(idx)
-                results = get_top_keywords(service, idx)
-                if total == 0:
-                    total = results['totalResults']
-                if results.get('rows', []):
-                    rows += results['rows']
-                else:
-                    break
-                idx += step
+            try:
+                idx = 1
+                total = 0
+                rows = []
+                while idx == 1 or idx < total:
+                    results = self._get_top_keywords(service, idx)
+                    if total == 0:
+                        total = results['totalResults']
+                    if results.get('rows', []):
+                        rows += results['rows']
+                    else:
+                        break
+                    idx += self._step
 
-            d = parse_results(rows)
-            self.send_data_to_db(d)
-            print(len(d.keys()))
+                d = self._parse_results(rows)
+                error = self._send_data_to_db(d)
+                if error:
+                    code = 500
+                    message = 'Error'
+                    self._logging('ERROR', self.path, str(self.headers), 'There was an error with db: %s' % error, _xid)
 
-        except TypeError as error:
-            code = 400
-            # Handle errors in constructing a query.
-            print(('There was an error in constructing your query : %s' % error))
+            except TypeError as error:
+                code = 500
+                message = 'Error'
+                # Handle errors in constructing a query.
+                self._logging('ERROR', self.path, self.headers,
+                              'There was an error in constructing your query : %s' % error, _xid)
 
-        except HttpError as error:
-            code = 400
-            # Handle API errors.
-            print(('Arg, there was an API error : %s : %s' %
-                   (error.resp.status, error._get_reason())))
+            except HttpError as error:
+                code = 500
+                message = 'Error'
+                # Handle API errors.
+                self._logging('ERROR', self.path, self.headers,
+                              'Arg, there was an API error : %s : %s' % (error.resp.status, error._get_reason()), _xid)
 
-        except AccessTokenRefreshError:
-            code = 400
-            # Handle Auth errors.
-            print('The credentials have been revoked or expired, please re-run '
-                  'the application to re-authorize')
+            except AccessTokenRefreshError:
+                code = 500
+                message = 'Error'
+                # Handle Auth errors.
+                self._logging('ERROR', self.path, self.headers, 'The credentials have been revoked or expired, '
+                                                       'please re-run the application to re-authorize', _xid)
 
-        self.send_response(code)
-        self.send_header('content-type', 'text/html')
+        elif self.path == '/healthcheck':
+            code = 200
+        else:
+            code = 404
+            message = 'Error'
+
+        self.send_response(code, message)
         self.end_headers()
-        self.wfile.write(bytes('ok'.encode('utf-8')))
 
+    def _send_data_to_db(self, data):
+        conn_string = "host=%s port=%d dbname=%s user=%s password=%s" % (self._POSTGRES_DB_HOST, self._POSTGRES__DB_PORT,
+                                                                         self._POSTGRES_DB_NAME, self._POSTGRES_DB_USER,
+                                                                         self._POSTGRES_DB_PASSWORD)
+        try:
+            db = psycopg2.connect(conn_string)
+            cur = db.cursor()
+            query = 'INSERT INTO %s (id, num) VALUES' % self._POSTGRES_DB_TABLE_NAME
+            for elem in data.keys():
+                query += '(%s, %s),' % (elem, data[elem])
+            query = query[:-1] + 'ON CONFLICT (id) DO UPDATE SET num=EXCLUDED.num;'
+            cur.execute(query)
+            db.commit()
+            cur.close()
+            db.close()
+        except psycopg2.OperationalError as error:
+            return error
+        except psycopg2.ProgrammingError as error:
+            return error
 
-    def send_data_to_db(self, data):
-        conn_string = "host=%s port=%d dbname=%s user=%s password=%s" % (self.host, 5432, self.db_name, self.user, self.password)
-        db = psycopg2.connect(conn_string)
-        cur = db.cursor()
-        query = 'DELETE FROM %s;' % self.table_name
-        cur.execute(query)
-        print(cur.statusmessage)
-        query = 'INSERT INTO %s (id, num) VALUES' % self.table_name
-        for elem in data.keys():
-            query += '(%s, %s),' % (elem, data[elem])
-        query = query[:-1] + ';'
-        print(query)
-        cur.execute(query)
-        print(cur.statusmessage)
-        db.commit()
-        cur.close()
-        db.close()
-
-
-
-
+        return None
 
 if __name__ == '__main__':
-    serv = http.server.HTTPServer(('localhost', 1234), HTTPServer)
+    URL = 'localhost'
+    LISTEN_PORT = 1234
+    serv = server.HTTPServer((URL, LISTEN_PORT), HTTPServer)
     serv.serve_forever()
